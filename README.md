@@ -1,5 +1,7 @@
 # SignalDesk local deployment
 
+**Not for production use.**
+
 Task 13 assembles the local-only SignalDesk fixture. It starts PostgreSQL 16,
 standalone Redis 7, Mailpit, MinIO, a single Alembic migration job, an idempotent
 synthetic seed job, and the six long-running application processes.
@@ -107,3 +109,7 @@ docker compose --env-file .env down --volumes --remove-orphans
 The only named volume is labeled synthetic fixture state (`postgres-data`).
 Redis, Mailpit, and MinIO use disposable tmpfs storage; MinIO's tmpfs is
 explicitly owned by its non-root UID.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
