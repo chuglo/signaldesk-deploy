@@ -1,0 +1,4 @@
+services:
+  mailpit:
+    ports:
+      - 127.0.0.1:${SIGNALDESK_MAILPIT_UI_PORT:-8025}:8025

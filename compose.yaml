@@ -1,0 +1,413 @@
+name: signaldesk
+
+x-runtime-environment: &runtime-environment
+  HTTP_PROXY: ""
+  HTTPS_PROXY: ""
+  ALL_PROXY: ""
+  http_proxy: ""
+  https_proxy: ""
+  all_proxy: ""
+  NO_PROXY: "127.0.0.1,localhost,postgres,redis,control-api,mailpit,minio"
+  no_proxy: "127.0.0.1,localhost,postgres,redis,control-api,mailpit,minio"
+
+x-hardened-app: &hardened-app
+  user: "10001:10001"
+  init: true
+  read_only: true
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+  restart: unless-stopped
+  stop_grace_period: 20s
+
+x-control-build: &control-build
+  context: ../signaldesk-control-api
+  dockerfile: Dockerfile
+  additional_contexts:
+    contracts: ../signaldesk-contracts
+    deploy: .
+
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    user: "70:70"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      POSTGRES_DB: ${SIGNALDESK_POSTGRES_DB:?SIGNALDESK_POSTGRES_DB is required}
+      POSTGRES_USER: ${SIGNALDESK_POSTGRES_USER:?SIGNALDESK_POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${SIGNALDESK_POSTGRES_PASSWORD:?SIGNALDESK_POSTGRES_PASSWORD is required}
+      PGPASSWORD: ${SIGNALDESK_POSTGRES_PASSWORD:?SIGNALDESK_POSTGRES_PASSWORD is required}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=scram-sha-256
+      PGDATA: /var/lib/postgresql/data/pgdata
+    command:
+      - postgres
+      - -c
+      - listen_addresses=*
+      - -c
+      - password_encryption=scram-sha-256
+      - -c
+      - ssl=off
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - PGPASSWORD="$${POSTGRES_PASSWORD}" psql -h 127.0.0.1 -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -v ON_ERROR_STOP=1 -Atc 'SELECT 1' | grep -qx 1
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+      - /var/run/postgresql:rw,noexec,nosuid,size=8m
+    networks: [data]
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    user: "999:999"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    command:
+      - redis-server
+      - --bind
+      - 0.0.0.0
+      - --protected-mode
+      - "no"
+      - --cluster-enabled
+      - "no"
+      - --appendonly
+      - "no"
+      - --save
+      - ""
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli PING | grep -qx PONG && redis-cli INFO cluster | grep -qx 'cluster_enabled:0\\r'"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    tmpfs:
+      - /data:rw,noexec,nosuid,size=32m
+      - /tmp:rw,noexec,nosuid,size=8m
+    networks: [data]
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:v1.29.7@sha256:757f22b56c1da03570afdb3d259effe5091018008a81bbedc8158cee7e16fdbc
+    user: "1000:1000"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      MP_DATABASE: /data/mailpit.db
+      MP_MAX_MESSAGES: "500"
+      MP_SMTP_BIND_ADDR: 0.0.0.0:1025
+      MP_UI_BIND_ADDR: 0.0.0.0:8025
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    tmpfs:
+      - /data:rw,noexec,nosuid,size=32m
+      - /tmp:rw,noexec,nosuid,size=8m
+    networks: [mail]
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    user: "1000:1000"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+      MINIO_BROWSER: "off"
+      MINIO_UPDATE: "off"
+      MINIO_CONFIG_ENV_FILE: /dev/null
+      HOME: /tmp
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+    command: ["server", "/data", "--address", ":9000"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent --show-error http://127.0.0.1:9000/minio/health/ready >/dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    tmpfs:
+      - /data:rw,noexec,nosuid,uid=1000,gid=1000,size=256m
+      - /tmp:rw,noexec,nosuid,size=16m
+    networks: [object]
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-07-21T05-28-08Z@sha256:fb8f773eac8ef9d6da0486d5dec2f42f219358bcb8de579d1623d518c9ebd4cc
+    user: "1000:1000"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    entrypoint: ["/bin/sh", "/config/minio-init.sh"]
+    environment:
+      <<: *runtime-environment
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+      MINIO_EXPORT_WORKER_ACCESS_KEY: ${MINIO_EXPORT_WORKER_ACCESS_KEY:?MINIO_EXPORT_WORKER_ACCESS_KEY is required}
+      MINIO_EXPORT_WORKER_SECRET_KEY: ${MINIO_EXPORT_WORKER_SECRET_KEY:?MINIO_EXPORT_WORKER_SECRET_KEY is required}
+    volumes:
+      - ./scripts/minio-init.sh:/config/minio-init.sh:ro
+      - ./config/minio-export-worker-policy.json:/config/minio-export-worker-policy.json:ro
+      - ./config/minio-lifecycle.json:/config/minio-lifecycle.json:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    networks: [object]
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+
+  migrate:
+    <<: *hardened-app
+    build: *control-build
+    command: ["python", "/opt/signaldesk/migrate.py"]
+    environment:
+      <<: *runtime-environment
+      SIGNALDESK_DATABASE_URL: postgresql+psycopg://${SIGNALDESK_POSTGRES_USER:?SIGNALDESK_POSTGRES_USER is required}:${SIGNALDESK_POSTGRES_PASSWORD:?SIGNALDESK_POSTGRES_PASSWORD is required}@postgres:5432/${SIGNALDESK_POSTGRES_DB:?SIGNALDESK_POSTGRES_DB is required}
+    networks: [data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  seed:
+    <<: *hardened-app
+    build: *control-build
+    command: ["python", "/opt/signaldesk/seed.py"]
+    environment:
+      <<: *runtime-environment
+      SIGNALDESK_DATABASE_URL: postgresql+psycopg://${SIGNALDESK_POSTGRES_USER:?SIGNALDESK_POSTGRES_USER is required}:${SIGNALDESK_POSTGRES_PASSWORD:?SIGNALDESK_POSTGRES_PASSWORD is required}@postgres:5432/${SIGNALDESK_POSTGRES_DB:?SIGNALDESK_POSTGRES_DB is required}
+      SIGNALDESK_SEED_USER_PASSWORD: ${SIGNALDESK_SEED_USER_PASSWORD:?SIGNALDESK_SEED_USER_PASSWORD is required}
+    networks: [data]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  control-api:
+    <<: *hardened-app
+    build: *control-build
+    environment:
+      <<: *runtime-environment
+      SIGNALDESK_DATABASE_URL: postgresql+psycopg://${SIGNALDESK_POSTGRES_USER:?SIGNALDESK_POSTGRES_USER is required}:${SIGNALDESK_POSTGRES_PASSWORD:?SIGNALDESK_POSTGRES_PASSWORD is required}@postgres:5432/${SIGNALDESK_POSTGRES_DB:?SIGNALDESK_POSTGRES_DB is required}
+      SIGNALDESK_REDIS_URL: redis://redis:6379/0
+      SIGNALDESK_WEB_BFF_SERVICE_CREDENTIAL: ${SIGNALDESK_WEB_BFF_SERVICE_CREDENTIAL:?SIGNALDESK_WEB_BFF_SERVICE_CREDENTIAL is required}
+      SIGNALDESK_DIAGNOSTIC_WORKER_SERVICE_CREDENTIAL: ${SIGNALDESK_DIAGNOSTIC_WORKER_SERVICE_CREDENTIAL:?SIGNALDESK_DIAGNOSTIC_WORKER_SERVICE_CREDENTIAL is required}
+      SIGNALDESK_EMAIL_WORKER_SERVICE_CREDENTIAL: ${SIGNALDESK_EMAIL_WORKER_SERVICE_CREDENTIAL:?SIGNALDESK_EMAIL_WORKER_SERVICE_CREDENTIAL is required}
+      SIGNALDESK_EXPORT_WORKER_SERVICE_CREDENTIAL: ${SIGNALDESK_EXPORT_WORKER_SERVICE_CREDENTIAL:?SIGNALDESK_EXPORT_WORKER_SERVICE_CREDENTIAL is required}
+    healthcheck:
+      test: ["CMD", "python", "/opt/signaldesk/wait-for-health.py", "control-api"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    networks: [service, data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      seed:
+        condition: service_completed_successfully
+
+  outbox-publisher:
+    <<: *hardened-app
+    build: *control-build
+    command: ["signaldesk-outbox-publisher", "--batch-size", "100", "--poll-interval", "1"]
+    environment:
+      <<: *runtime-environment
+      SIGNALDESK_DATABASE_URL: postgresql+psycopg://${SIGNALDESK_POSTGRES_USER:?SIGNALDESK_POSTGRES_USER is required}:${SIGNALDESK_POSTGRES_PASSWORD:?SIGNALDESK_POSTGRES_PASSWORD is required}@postgres:5432/${SIGNALDESK_POSTGRES_DB:?SIGNALDESK_POSTGRES_DB is required}
+      SIGNALDESK_REDIS_URL: redis://redis:6379/0
+    healthcheck:
+      test: ["CMD", "python", "/opt/signaldesk/wait-for-health.py", "outbox-publisher"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      seed:
+        condition: service_completed_successfully
+
+  web:
+    <<: *hardened-app
+    build:
+      context: ../signaldesk-web
+      dockerfile: Dockerfile
+      additional_contexts:
+        deploy: .
+    environment:
+      <<: *runtime-environment
+      SIGNALDESK_WEB_ENVIRONMENT: local
+      SIGNALDESK_WEB_CONTROL_API_BASE_URL: http://control-api:8000
+      SIGNALDESK_WEB_BFF_SERVICE_CREDENTIAL: ${SIGNALDESK_WEB_BFF_SERVICE_CREDENTIAL:?SIGNALDESK_WEB_BFF_SERVICE_CREDENTIAL is required}
+      SIGNALDESK_WEB_FLASK_SECRET_KEY: ${SIGNALDESK_WEB_FLASK_SECRET_KEY:?SIGNALDESK_WEB_FLASK_SECRET_KEY is required}
+      SIGNALDESK_WEB_FLASK_SECRET_KEY_FALLBACKS: ${SIGNALDESK_WEB_FLASK_SECRET_KEY_FALLBACKS:?SIGNALDESK_WEB_FLASK_SECRET_KEY_FALLBACKS is required}
+      SIGNALDESK_WEB_SESSION_COOKIE_SECURE: "false"
+    healthcheck:
+      test: ["CMD", "python", "/opt/signaldesk/wait-for-health.py", "web"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    ports:
+      - 127.0.0.1:${SIGNALDESK_WEB_PORT:-8080}:8080
+    networks: [service, edge]
+    depends_on:
+      control-api:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      seed:
+        condition: service_completed_successfully
+
+  diagnostic-worker:
+    <<: *hardened-app
+    build:
+      context: ../signaldesk-diagnostic-worker
+      dockerfile: Dockerfile
+      additional_contexts:
+        contracts: ../signaldesk-contracts
+        deploy: .
+    environment:
+      <<: *runtime-environment
+      SIGNALDESK_DIAGNOSTIC_WORKER_REDIS_URL: redis://redis:6379/0
+      SIGNALDESK_DIAGNOSTIC_WORKER_CONTROL_API_BASE_URL: http://control-api:8000
+      SIGNALDESK_DIAGNOSTIC_WORKER_DIAGNOSTIC_WORKER_SERVICE_CREDENTIAL: ${SIGNALDESK_DIAGNOSTIC_WORKER_SERVICE_CREDENTIAL:?SIGNALDESK_DIAGNOSTIC_WORKER_SERVICE_CREDENTIAL is required}
+      SIGNALDESK_DIAGNOSTIC_WORKER_CONSUMER_NAME: diagnostic-worker-local
+      SIGNALDESK_DIAGNOSTIC_WORKER_DNS_NAMESERVER: 127.0.0.11
+      SIGNALDESK_DIAGNOSTIC_WORKER_STREAM_NAME: signaldesk:diagnostics
+      SIGNALDESK_DIAGNOSTIC_WORKER_CONSUMER_GROUP: diagnostic-workers
+      SIGNALDESK_DIAGNOSTIC_WORKER_DLQ_STREAM_NAME: signaldesk:diagnostics:dlq
+    healthcheck:
+      test: ["CMD", "python", "/opt/signaldesk/wait-for-health.py", "diagnostic-worker"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [service, data]
+    depends_on:
+      control-api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      seed:
+        condition: service_completed_successfully
+
+  email-worker:
+    <<: *hardened-app
+    build:
+      context: ../signaldesk-email-worker
+      dockerfile: Dockerfile
+      additional_contexts:
+        contracts: ../signaldesk-contracts
+        deploy: .
+    environment:
+      <<: *runtime-environment
+      SIGNALDESK_EMAIL_WORKER_REDIS_URL: redis://redis:6379/0
+      SIGNALDESK_EMAIL_WORKER_CONTROL_API_BASE_URL: http://control-api:8000
+      SIGNALDESK_EMAIL_WORKER_EMAIL_WORKER_SERVICE_CREDENTIAL: ${SIGNALDESK_EMAIL_WORKER_SERVICE_CREDENTIAL:?SIGNALDESK_EMAIL_WORKER_SERVICE_CREDENTIAL is required}
+      SIGNALDESK_EMAIL_WORKER_CONSUMER_NAME: email-worker-local
+      SIGNALDESK_EMAIL_WORKER_STREAM_NAME: signaldesk:emails
+      SIGNALDESK_EMAIL_WORKER_CONSUMER_GROUP: email-workers
+      SIGNALDESK_EMAIL_WORKER_DLQ_STREAM_NAME: signaldesk:emails:dlq
+      SIGNALDESK_EMAIL_WORKER_SMTP_HOST: mailpit
+      SIGNALDESK_EMAIL_WORKER_SMTP_PORT: "1025"
+      SIGNALDESK_EMAIL_WORKER_MAILPIT_API_BASE_URL: http://mailpit:8025
+    healthcheck:
+      test: ["CMD", "python", "/opt/signaldesk/wait-for-health.py", "email-worker"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [service, data, mail]
+    depends_on:
+      control-api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      seed:
+        condition: service_completed_successfully
+
+  export-worker:
+    <<: *hardened-app
+    command: ["python", "/opt/signaldesk/export_worker_entrypoint.py"]
+    build:
+      context: ../signaldesk-export-worker
+      dockerfile: Dockerfile
+      additional_contexts:
+        contracts: ../signaldesk-contracts
+        deploy: .
+    environment:
+      <<: *runtime-environment
+      AWS_EC2_METADATA_DISABLED: "true"
+      SIGNALDESK_EXPORT_WORKER_REDIS_URL: redis://redis:6379/0
+      SIGNALDESK_EXPORT_WORKER_CONTROL_API_BASE_URL: http://control-api:8000
+      SIGNALDESK_EXPORT_WORKER_EXPORT_WORKER_SERVICE_CREDENTIAL: ${SIGNALDESK_EXPORT_WORKER_SERVICE_CREDENTIAL:?SIGNALDESK_EXPORT_WORKER_SERVICE_CREDENTIAL is required}
+      SIGNALDESK_EXPORT_WORKER_CONSUMER_NAME: export-worker-local
+      SIGNALDESK_EXPORT_WORKER_STREAM_NAME: signaldesk:exports
+      SIGNALDESK_EXPORT_WORKER_CONSUMER_GROUP: export-workers
+      SIGNALDESK_EXPORT_WORKER_DLQ_STREAM_NAME: signaldesk:exports:dlq
+      SIGNALDESK_EXPORT_WORKER_MINIO_ENDPOINT: http://minio:9000
+      SIGNALDESK_EXPORT_WORKER_MINIO_BUCKET: signaldesk-exports
+      SIGNALDESK_EXPORT_WORKER_OBJECT_PREFIX: exports/
+      SIGNALDESK_EXPORT_WORKER_MINIO_ACCESS_KEY: ${MINIO_EXPORT_WORKER_ACCESS_KEY:?MINIO_EXPORT_WORKER_ACCESS_KEY is required}
+      SIGNALDESK_EXPORT_WORKER_MINIO_SECRET_KEY: ${MINIO_EXPORT_WORKER_SECRET_KEY:?MINIO_EXPORT_WORKER_SECRET_KEY is required}
+    healthcheck:
+      test: ["CMD", "python", "/opt/signaldesk/wait-for-health.py", "export-worker"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [service, data, object]
+    depends_on:
+      control-api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+      seed:
+        condition: service_completed_successfully
+
+networks:
+  edge: {}
+  data:
+    internal: true
+  service:
+    internal: true
+  mail:
+    internal: true
+  object:
+    internal: true
+
+volumes:
+  postgres-data:
+    labels:
+      com.signaldesk.fixture: synthetic

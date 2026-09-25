@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "scope": "signaldesk-task-13-local-compose",
+  "images": {
+    "python_base": "python:3.11.15-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba",
+    "postgres": "postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777",
+    "redis": "redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99",
+    "minio": "minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e",
+    "minio_client": "minio/mc:RELEASE.2025-07-21T05-28-08Z@sha256:fb8f773eac8ef9d6da0486d5dec2f42f219358bcb8de579d1623d518c9ebd4cc",
+    "mailpit": "axllent/mailpit:v1.29.7@sha256:757f22b56c1da03570afdb3d259effe5091018008a81bbedc8158cee7e16fdbc"
+  },
+  "local_service_image_ids": {
+    "control-api": "sha256:e1b5a1abadfdb1e4f0e8847634e394e80b096f4b153dc267679a1c08d6adf7b5",
+    "outbox-publisher": "sha256:739eaae409f493ac8d83d73aec4f505b19f50c47a14b8ef49027f05078e6cd3c",
+    "diagnostic-worker": "sha256:b0f518aa1e2b7f8b44a2113b6a5c2611ac94404ee2e55208e763751210e7b8a1",
+    "email-worker": "sha256:2a631f0e0f583de057bb3e398343827c3bb2f0b6a960ba9fa2799bb5eddf5ed9",
+    "export-worker": "sha256:f02ce6a1e0e5137df40908f85ec622500943873a0904643ff57db2862d058e79",
+    "web": "sha256:233a380a12fe5d7bfc8a26d4f498ff47050ae465322f949831c12fcc68697f91",
+    "migrate": "sha256:54d1dedc1481b18e54b5a2363aabd36284f03f88406f5c975c19e16bd1d81408",
+    "seed": "sha256:42326d686da33bb80500bd0f4dd90fe94daba987885c1bf4e0cf35ab303e1c74"
+  },
+  "local_service_image_limitation": "Local Compose builds have content-addressed image IDs but no registry RepoDigest until pushed; this manifest therefore pins their base."
+}

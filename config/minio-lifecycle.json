@@ -1,0 +1,14 @@
+{
+  "Rules": [
+    {
+      "ID": "signaldesk-exports-expire-30-days",
+      "Status": "Enabled",
+      "Filter": {
+        "Prefix": "exports/"
+      },
+      "Expiration": {
+        "Days": 30
+      }
+    }
+  ]
+}
